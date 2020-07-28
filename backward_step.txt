@@ -1,0 +1,708 @@
+-- FreeFem++ v4.6 (Thu Apr  2 15:47:38 CEST 2020 - git v4.6)
+ Load: lg_fem lg_mesh lg_mesh3 eigenvalue 
+    1 : //  backward_step.edp
+    2 : //
+    3 : //  Discussion:
+    4 : //
+    5 : //    Laminar Flow over a Backward Facing Step, Gamm Workshop.
+    6 : //
+    7 : //    Incompressible Navier Stokes with Taylor-Hood Finite element
+    8 : //    Nonlinearity handled by Newton's method. 
+    9 : //    Continuation on Reynolds Number
+   10 : //    Mesh adaptation 
+   11 : //
+   12 : //    The backward step geometry is:
+   13 : //
+   14 : //      | y=H   +--------------L5--------+  y=H
+   15 : //      |       |                        |
+   16 : //      |       L1                       L2
+   17 : //      |       |                        |
+   18 : //      | y=0.5 +-L4--+                  |
+   19 : //      |             L4                 |
+   20 : //      | y=0         +--------L3--------+  y=0
+   21 : //      |       ^     ^                  ^
+   22 : //      |       x=0   x=3                x=22
+   23 : //      |
+   24 : //      +--------------------------------------------------
+   25 : //
+   26 : //    In flow case 1, H = 1.5, and in flow case 2, H = 1.
+   27 : //    Solutions are desired at Reynolds numbers 50, 150, 500.
+   28 : //    Side L1 is an inflow boundary, with a parabolic inflow profile:
+   29 : //      uinflow = (H-y)*(y-1/2)/((H-1/2)/2)^2
+   30 : //    Side L2 is an outflow boundary where boundary conditions are not imposed.
+   31 : //    Sides labeled L3, L4 and L5 are no slip walls, with U = V = 0.
+   32 : //
+   33 : //    The steady incompressible Navier Stokes equations in 2D are:
+   34 : //
+   35 : //      -nu ( uxx + uyy ) + u ux + v uy + px = 0
+   36 : //      -nu ( vxx + vyy ) + u vx + v vy + py = 0
+   37 : //                                   ux + vy = 0
+   38 : //
+   39 : //  Location:
+   40 : //
+   41 : //    http://people.sc.fsu.edu/~jburkardt/freefem_src/backward_step/backward_step.edp
+   42 : //
+   43 : //  Original location:
+   44 : //
+   45 : //    http://www.um.es/freefem/ff++/pmwiki.php?n=Main.IncompressibleNavierStokes
+   46 : //
+   47 : //  Modified:
+   48 : //
+   49 : //    23 July 2015
+   50 : //
+   51 : //  Reference:
+   52 : //
+   53 : //    Ken Morgan, Jacques Periaux, Francois Thomasset, 
+   54 : //    Analysis of laminar flow over a backward facing step, 
+   55 : //    Notes on Numerical Fluid Mechanics, Volume 9,
+   56 : //    Vieweg, 1984,
+   57 : //    ISBN: 3-528-08083-3,
+   58 : //    LC: QA929.A5.
+   59 : //
+   60 : //  Parameters:
+   61 : //
+   62 : //    bool adapt: 
+   63 : //    0 for no adaptive mesh
+   64 : //    1 for adaptive mesh.
+   65 : //
+   66 : //    bool dplot:
+   67 : //    0 for no debug plot.
+   68 : //    1 for debug plot.
+   69 : //
+   70 : //    real eps,
+   71 : //    a coefficient for the stabilization term in the continuity equation.
+   72 : //
+   73 : //    real H, the total height of the channel.
+   74 : //
+   75 : //    real h, the width of the inflow.
+   76 : //
+   77 : //    real HH(2), an array of values for H.
+   78 : //
+   79 : //    real L, the total length of the channel.
+   80 : //
+   81 : //    real l, the X coordinate at which the step occurs.
+   82 : //
+   83 : //    int ll(4), a array of labels [3,2,5,1] used to override the default 
+   84 : //    labels [1,2,3,4] in the initial "square()" command used to create 
+   85 : //    the first mesh.
+   86 : //
+   87 : //    real Reynold[5], values of the Reynolds number at which a solution is
+   88 : //    desired.  The original benchmark only required 50, 150 and 500, but
+   89 : //    for continuation it is useful to include 300 and 400 to make 500 more
+   90 : //    easily reached.
+   91 : //
+   92 : bool adapt = 1;
+   93 : bool dplot = 0;
+   94 : real eps = 1.0E-08;
+   95 : real[int] HH = [ 1.5, 1.0 ]; 
+   96 : real l = 3.0;
+   97 : real L = 22.0;
+   98 : int[int] ll = [ 3, 2, 5, 1 ];
+   99 : real[int] Reynold = [ 50.0, 150.0, 300.0, 400.0, 500.0 ];
+  100 : real[int,int] reattachP = [ 
+  101 :   [ 2.8,  2.0 ], 
+  102 :   [ 5.16, 3.7 ] ] ;  // reattachP[irey,cas]
+  103 : int stepmax;
+  104 : 
+  105 : if ( adapt )
+  106 : {
+  107 :   stepmax = 2;
+  108 : }
+  109 : else
+  110 : {
+  111 :   stepmax = 1;
+  112 : }
+  113 : cout << "\n";
+  114 : cout << "backward_step:\n";
+  115 : cout << "  FreeFem++ version:\n";
+  116 : 
+  117 : for ( int cas = 0; cas < 2; cas++ )
+  118 : {
+  119 :   real h = HH[cas] - 0.5;
+  120 :   real H = HH[cas];
+  121 : //
+  122 : //  Set the inflow profile function.
+  123 : //
+  124 :   func uinflow = ( H - y ) * ( y - 0.5 ) / square ( ( H - 0.5 ) / 2.0 );
+  125 : //
+  126 : //  Define the zoom box { (xmin,ymin), (xmax,ymax) ]
+  127 : //  for closeups of the flow near the step.
+  128 : //
+  129 :   func zoom = [ 
+  130 :     [  2.5, 0.0 ], 
+  131 :     [ 10.0, H   ] ];
+  132 : //
+  133 : //  Here's an easy way to make the mesh for the step:
+  134 : //  Construct a rectangular mesh, and then take a rectangular bite out of it.
+  135 : //  
+  136 :   mesh Th = square ( 6, 22, [ x * L, y * H ], label = ll );
+  137 :   Th = trunc ( Th, ( l < x ) | ( 0.5 < y ), label = 4 ); 
+  138 : 
+  139 :   plot ( Th, cmm = "Initial mesh on backward step", wait = 0, 
+  140 :     ps = "backward_step_mesh.ps" );
+  141 : //
+  142 : //  Set a meshsize metric, and adapt the mesh twice.
+  143 : //
+  144 :   func meshsize = 2.0 * max 
+  145 :   (
+  146 :     0.05,
+  147 :     max 
+  148 :     (
+  149 :       max ( x - l, 0.0 ) / 19.0 / 5.0,
+  150 :       max ( l - x, 0.0 ) /  3.0 / 8.0 
+  151 :     ) 
+  152 :   );
+  153 : 
+  154 :   Th = adaptmesh ( Th, meshsize, IsMetric = 1 );
+  155 :   plot ( Th, cmm = "Adapted mesh, first pass", wait = 0 );
+  156 : 
+  157 :   Th = adaptmesh ( Th, meshsize, IsMetric = 1 );
+  158 :   plot ( Th, cmm = "Adapted mesh, second pass", wait = 0 );
+  159 : //
+  160 : //  Define the finite element spaces.
+  161 : //  XXMh is the standard Taylor-Hood space.
+  162 : //
+  163 :   fespace Xh ( Th, P2 );
+  164 :   fespace Mh ( Th, P1 );
+  165 :   fespace XXMh ( Th, [ P2, P2, P1 ] );
+  166 : //
+  167 : //  Define trial and test functions.
+  168 : //
+  169 :   XXMh [ u1, u2, p ];
+  170 :   XXMh [ v1, v2, q ];
+  171 : //
+  172 : //  Macros for the variational formulation
+  173 : //  Apparently, these mysterious trailing "//" signs are an important
+  174 : //  part of the black magic.
+  175 : //
+  176 :   macro div(u1,u2) (dx(u1)+dy(u2)) )  //
+  177 :   macro grad(u1,u2) [dx(u1),dy(u2)] )  //
+  178 :   macro ugrad(u1,u2,v) (u1*dx(v)+u2*dy(v)) )  //
+  179 :   macro Ugrad(u1,u2,v1,v2) [ugrad(u1,u2,v1),ugrad(u1,u2,v2)] )  //
+  180 : //
+  181 : //  Define the Stokes problem:
+  182 : //
+  183 :   solve Stokes ( [u1,u2,p], [v1,v2,q], solver = UMFPACK ) =
+  184 :     int2d ( Th ) ( dx(u1) * dx(v1) + dy(u1) * dy(v1) - p * dx(v1) )
+  185 :   + int2d ( Th ) ( dx(u2) * dx(v2) + dy(u2) * dy(v2) - p * dy(v2) )
+  186 :   + int2d ( Th ) ( eps * p * q - ( dx(u1) + dy(u2) ) * q )
+  187 :   + on ( 1, u1 = uinflow, u2 = 0.0 ) 
+  188 :   + on ( 3, 4, 5, u1 = 0.0, u2 = 0.0 );
+  189 : //
+  190 : //  Make piecewise linear copies of U1 and U2 for plotting.
+  191 : //
+  192 :   Xh uu1;
+  193 :   Xh uu2;
+  194 : 
+  195 :   uu1 = u1;
+  196 :   uu2 = u2;  
+  197 : 
+  198 :   plot ( coef = 0.2, cmm = "Stokes [u1,u2] and p  ", p, [ uu1, uu2 ], wait = 0 );
+  199 : 
+  200 :   plot ( coef = 0.2, cmm = "Stokes  p  ", p, wait = 0 );
+  201 : //
+  202 : //  Define test and trial functions for the streamline problem.
+  203 : //
+  204 :   Mh psi;
+  205 :   Mh phi;
+  206 : //
+  207 : //  Define the stream function PSI, so we can plot streamlines.
+  208 : //
+  209 :   solve streamlines ( psi, phi ) = 
+  210 :     int2d ( Th ) ( dx(psi) * dx(phi) + dy(psi) * dy(phi) )
+  211 :   + int2d ( Th ) ( - ( dy(u1) - dx(u2) ) * phi )
+  212 :   + on ( 3, 4, psi = 0.0 )
+  213 :   + on ( 5, psi = -2.0 / 3.0 * ( H - 0.5 ) );
+  214 : //
+  215 : //  Set contour levels for streamlines. 
+  216 : //  
+  217 :   real[int] psiviso(31);
+  218 :   {
+  219 :     int k = 0;
+  220 :     for ( int i = -20; i < 0; i++ )
+  221 :     {
+  222 :       psiviso[k] = i * 2.0 / 3.0 * ( H - 0.5 ) / 20.0;
+  223 :       k = k + 1;
+  224 :     }
+  225 :     for ( int i = 0; i <= 10; i++ )
+  226 :     {
+  227 :       psiviso[k] = i * 2.0 / 3.0 * ( H - 0.5 ) / 100.0 / ( H * H * H );
+  228 :       k = k + 1;
+  229 :     }
+  230 :   }
+  231 : 
+  232 :   plot ( psi, cmm = "Streamlines", wait = 0, viso = psiviso );
+  233 : 
+  234 : //int i = 0;
+  235 :   real nu = 1.0 / 100.0;
+  236 : //
+  237 : //  For the Newton method, we need to create a "previous" solution.
+  238 : //
+  239 :   XXMh [ up1, up2, pp ];
+  240 : //
+  241 : //  Build the matrix for the linear system in Newton method
+  242 : //
+  243 :   varf vDNS ( [u1,u2,p], [v1,v2,q] ) =
+  244 :     int2d ( Th ) (
+  245 :                  nu * ( dx(u1)*dx(v1) + dy(u1)*dy(v1)
+  246 :                        +dx(u2)*dx(v2) + dy(u2)*dy(v2)
+  247 :                       )
+  248 :               + p*q*1.0e-8// stabilization term 
+  249 :               - p*(dx(v1)+dy(v2))
+  250 :               - (dx(u1)+dy(u2))*q
+  251 :               + Ugrad(u1,u2,up1,up2)  [ugrad(u1,u2,up1)  (u1*dx(up1)+u2*dy(up1)),ugrad(u1,u2,up2)  (u1*dx(up2)+u2*dy(up2))]'*[v1,v2] 
+  252 :               + Ugrad(up1,up2,u1,u2)  [ugrad(up1,up2,u1)  (up1*dx(u1)+up2*dy(u1)),ugrad(up1,up2,u2)  (up1*dx(u2)+up2*dy(u2))]'*[v1,v2]
+  253 :              )
+  254 :   + on ( 1, 3, 4, 5, u1 = 0, u2 = 0 );
+  255 : //
+  256 : //  Build the right hand side '-F(up,vp,pp)" for Newton's method.
+  257 : //  Note that the first set of formal arguments [u1,u2,p] are
+  258 : //  not needed, and that when we invoke vNS later, we use a "0"
+  259 : //  in that argument position.
+  260 : //
+  261 : //varf vNS ( [u1,u2,p], [v1,v2,q] ) =
+  262 : //  int2d ( Th ) (       
+  263 : //               -nu * ( dx(up1)*dx(v1) + dy(up1)*dy(v1)
+  264 : //                     +dx(up2)*dx(v2) + dy(up2)*dy(v2) 
+  265 : //                    )
+  266 : //            + pp*q*1.0e-8// stabilization term 
+  267 : //            + pp*(dx(v1)+ dy(v2))
+  268 : //            + (dx(up1)+ dy(up2))*q
+  269 : //            - Ugrad(up1,up2,up1,up2)'*[v1,v2]
+  270 : //            )
+  271 : //+ on ( 1, 3, 4, 5, u1 = 0.0, u2 = 0.0 );
+  272 : //
+  273 : //  Try this reformulation which groups the terms by V1, V2, and Q.
+  274 : //
+  275 :   varf vNS ( [u1,u2,p], [v1,v2,q] ) =
+  276 :     int2d ( Th ) ( - nu * ( dx(up1) * dx(v1) + dy(up1) * dy(v1) )
+  277 :                    - up1 * dx(up1) * v1 - up2 * dy(up1) * v1
+  278 :                    + pp * dx(v1) )
+  279 :   + int2d ( Th ) ( - nu * ( dx(up2) * dx(v2) + dy(up2) * dy(v2) )
+  280 :                    - up1 * dx(up2) * v2 - up2 * dy(up2) * v2
+  281 :                    + pp * dy(v2) )
+  282 :   + int2d ( Th ) ( ( dx(up1) + dy(up2) + eps * pp ) * q )
+  283 :   + on ( 1, 3, 4, 5, u1 = 0.0, u2 = 0.0 );
+  284 : //
+  285 : //  Continuation on Reynolds number
+  286 : //
+  287 : //  Compute with one Reynolds number.
+  288 : //  If convergence, use that solution as initial data for a computation
+  289 : //  at the next higher Reynolds number.
+  290 : //
+  291 :   for ( int krey = 0; krey < Reynold.n; krey++ )
+  292 :   { 
+  293 :     real re = Reynold[krey];
+  294 :     nu = ( H - h ) / re;
+  295 :     real lerr = 0.01;
+  296 : //
+  297 : //  Adapt the mesh once or twice.
+  298 : //
+  299 :     for ( int step = 0; step < stepmax; step++ )
+  300 :     {
+  301 :       if ( adapt )
+  302 :       {
+  303 :         Th = adaptmesh ( Th, [u1,u2], p, abserror = 1, cutoff = 1e-5, 
+  304 :           err = lerr, nbvx = 100000, hmin = 0.01 );
+  305 :         [u1,u2,p] = [u1,u2,p];
+  306 :         [up1,up2,pp] = [up1,up2,pp];
+  307 : 
+  308 :         if ( dplot )
+  309 :         {
+  310 :           plot ( Th, wait = 0, bb = zoom );
+  311 :         }
+  312 : 
+  313 :       }
+  314 : //	
+  315 : //  Newton iterations.
+  316 : //
+  317 :       for ( int i = 0; i <= 20; i++ )
+  318 :       {
+  319 :         up1[] = u1[];
+  320 :         real[int] b = vNS(0,XXMh); // Right hand side for the linear system
+  321 :         matrix A = vDNS(XXMh,XXMh);// Matrix for the linear system
+  322 :         set ( A, solver = UMFPACK );// Set solver to matrix
+  323 :         real[int] du = A^-1 * b; // Solve the system
+  324 :         u1[] = u1[] + du; // Perform the update of the increment in both variables at the same time
+  325 :         cout << " iter = "<< i << " ||dx|| = " << du.l2 <<  " rey = " << re << endl;
+  326 :         if ( du.l2 < 1.0e-6 ) 
+  327 :         {
+  328 :           break; 
+  329 :         }
+  330 : 
+  331 :         if ( dplot )
+  332 :         {
+  333 :           uu1 = u1;
+  334 :           uu2 = u2;
+  335 :           plot ( coef = 0.2, cmm = "H="+H+" re "+re+ " [u1,u2] and p  ", 
+  336 :             p, [uu1,uu2], bb = zoom );  
+  337 :         }    
+  338 : 
+  339 :       }
+  340 :     }
+  341 : //
+  342 : //  Determine the flow reattachment point and compare it to the value in the paper.
+  343 : //
+  344 :     streamlines;
+  345 : //
+  346 : //  Unfortunate use of AND and OR without enough parentheses to avoid ambiguity:
+  347 : //
+  348 :     real rp1 = 1.0 / ( H - h ) * int1d ( Th, 3 ) 
+  349 :       ( real ( ( x >= l & x < ( l+0.5 ) ) | ( x > (l+0.4) ) & ( x<10.0 ) & ( dy(psi) >= 1.0e-5 ) ) );
+  350 :     real rp2 = 1.0 / ( H - h ) * int1d ( Th, 3 ) 
+  351 :       ( real ( ( x >= l & x < ( l+0.5 ) ) | ( x > (l+0.4) ) & ( x<10.0 ) & ( dy(psi) >= -1.0e-5 ) ) );
+  352 :     real rp3 = 1.0 / ( H - h ) * int1d ( Th, 3 ) 
+  353 :       ( real ( ( x >= l & x < ( l+0.5 ) ) | ( x > (l+0.4) ) & ( x<10.0 ) & ( dy(u1) <= 0.0 )       ) );
+  354 : 
+  355 :     cout << " Reattach point " << rp2 << " " << rp2 << " " << rp3 << endl;
+  356 :     real rp = ( rp1 + rp2 ) / 2.0;
+  357 :     cout << "\n";
+  358 :     cout << "  H= " << H 
+  359 :          << "  Re " << re 
+  360 :          << "  Computed reattachment point = " << rp;
+  361 : 
+  362 :     if ( krey < 2 )
+  363 :     {
+  364 :       real rppaper = reattachP(krey,cas); 
+  365 :       real err = abs ( rppaper - rp ) / rp;
+  366 :       cout << "  Published reattachment point = " << rppaper 
+  367 :            << "  Relative error = " << err;
+  368 :     }
+  369 :     cout << "  psi max = " << psi[].max << endl; 
+  370 :     cout << "\n";
+  371 : //
+  372 : //  Plot.
+  373 : //
+  374 :     uu1 = u1;
+  375 :     uu2 = u2;
+  376 : 
+  377 :     plot ( coef = 0.2, cmm = "H="+H+", rey="+re+" [u1,u2] and p  ", p, [uu1,uu2],
+  378 :       wait = 0, nbiso = 20, bb = zoom ); //,ps="Upstep-"+H+"-"+re+".ps");
+  379 : 
+  380 :     plot ( coef = 0.2, cmm = "H="+H+", rey="+re+" [u1,u2] and p  ", p, [uu1,uu2],
+  381 :       wait = 0, nbiso = 20, bb = zoom ); //,ps="Upstep-"+H+"-"+re+".ps");  
+  382 : 
+  383 :     plot ( coef = 0.2, cmm = "H="+H+", rey="+re+" [u1,u2] and p  ", psi,
+  384 :       bb = zoom, viso = psiviso ); //,ps="psi-step-"+H+"-"+re+".ps");  
+  385 :   }
+  386 : }
+  387 : //
+  388 : //  Terminate.
+  389 : //
+  390 : cout << "\n";
+  391 : cout << "backward_step:\n";
+  392 : cout << "  Normal end of execution.\n";
+  393 : 
+  394 :  sizestack + 1024 =7800  ( 6776 )
+
+
+backward_step:
+  FreeFem++ version:
+  -- Square mesh : nb vertices  =161 ,  nb triangles = 264 ,  nb boundary edges 56
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 1131 , h  min 0.0750735 , h max 0.518734
+     area =  31.125 , M area = 490.134 , M area/( |Khat| nt) 1.00081
+     infiny-regularity:  min 0.542245  max 1.53038
+     anisomax  7.13705, beta max = 1.31454 min  0.804044
+  --  mesh:  Nb of Triangles =   1131, Nb of Vertices 633
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 3160 , h  min 0.0709479 , h max 0.519916
+     area =  31.125 , M area = 1398.84 , M area/( |Khat| nt) 1.02231
+     infiny-regularity:  min 0.540199  max 1.59972
+     anisomax  2.3495, beta max = 1.27862 min  0.753495
+  --  mesh:  Nb of Triangles =   3160, Nb of Vertices 1724
+  -- Solve : 
+          min -0.31059  max 76.9632
+  -- Solve : 
+          min -0.666667  max 0.000148204
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 5787 , h  min 0.0177857 , h max 0.772436
+     area =  31.125 , M area = 2586.81 , M area/( |Khat| nt) 1.03231
+     infiny-regularity:  min 0.437553  max 2.40783
+     anisomax  14.0946, beta max = 1.32005 min  0.738868
+  --  mesh:  Nb of Triangles =   5787, Nb of Vertices 3028
+ iter = 0 ||dx|| = 2372.89 rey = 50
+ iter = 1 ||dx|| = 1.41744 rey = 50
+ iter = 2 ||dx|| = 0.066408 rey = 50
+ iter = 3 ||dx|| = 0.000194885 rey = 50
+ iter = 4 ||dx|| = 9.43374e-10 rey = 50
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 3122 , h  min 0.00773199 , h max 1.66643
+     area =  31.125 , M area = 1363.51 , M area/( |Khat| nt) 1.00861
+     infiny-regularity:  min 0.353251  max 2.25517
+     anisomax  35.4976, beta max = 1.4019 min  0.741077
+  --  mesh:  Nb of Triangles =   3122, Nb of Vertices 1657
+ iter = 0 ||dx|| = 0.712579 rey = 50
+ iter = 1 ||dx|| = 0.00347139 rey = 50
+ iter = 2 ||dx|| = 9.76209e-08 rey = 50
+  -- Solve : 
+          min -0.666667  max 0.00726638
+ Reattach point 3.41265 3.41265 2.79811
+
+  H= 1.5  Re 50  Computed reattachment point = 3.41265  Published reattachment point = 2.8  Relative error = 0.179524  psi max = 0.00726638
+
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2169 , h  min 0.00749991 , h max 3.72302
+     area =  31.125 , M area = 931.434 , M area/( |Khat| nt) 0.991726
+     infiny-regularity:  min 0.402605  max 2.04494
+     anisomax  77.2033, beta max = 1.34305 min  0.751181
+  --  mesh:  Nb of Triangles =   2169, Nb of Vertices 1163
+ iter = 0 ||dx|| = 11.4032 rey = 150
+ iter = 1 ||dx|| = 0.697461 rey = 150
+ iter = 2 ||dx|| = 0.0416929 rey = 150
+ iter = 3 ||dx|| = 9.31735e-05 rey = 150
+ iter = 4 ||dx|| = 8.53663e-10 rey = 150
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2353 , h  min 0.0071342 , h max 3.98644
+     area =  31.125 , M area = 1055.48 , M area/( |Khat| nt) 1.03593
+     infiny-regularity:  min 0.403297  max 2.28494
+     anisomax  113.11, beta max = 1.40474 min  0.727129
+  --  mesh:  Nb of Triangles =   2353, Nb of Vertices 1258
+ iter = 0 ||dx|| = 0.0478758 rey = 150
+ iter = 1 ||dx|| = 0.000342122 rey = 150
+ iter = 2 ||dx|| = 7.48663e-09 rey = 150
+  -- Solve : 
+          min -0.666667  max 0.00840208
+ Reattach point 8.22826 8.22826 6.65226
+
+  H= 1.5  Re 150  Computed reattachment point = 8.22826  Published reattachment point = 5.16  Relative error = 0.372893  psi max = 0.00840208
+
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2237 , h  min 0.00704953 , h max 4.61521
+     area =  31.125 , M area = 997.581 , M area/( |Khat| nt) 1.02987
+     infiny-regularity:  min 0.391187  max 2.19543
+     anisomax  108.015, beta max = 1.41883 min  0.759871
+  --  mesh:  Nb of Triangles =   2237, Nb of Vertices 1196
+ iter = 0 ||dx|| = 4.52692 rey = 300
+ iter = 1 ||dx|| = 0.51331 rey = 300
+ iter = 2 ||dx|| = 0.0404834 rey = 300
+ iter = 3 ||dx|| = 0.0001142 rey = 300
+ iter = 4 ||dx|| = 1.46873e-09 rey = 300
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2444 , h  min 0.00713341 , h max 2.94842
+     area =  31.125 , M area = 1152.06 , M area/( |Khat| nt) 1.08861
+     infiny-regularity:  min 0.331332  max 2.23685
+     anisomax  82.0969, beta max = 1.43238 min  0.745194
+  --  mesh:  Nb of Triangles =   2444, Nb of Vertices 1300
+ iter = 0 ||dx|| = 0.502396 rey = 300
+ iter = 1 ||dx|| = 0.024909 rey = 300
+ iter = 2 ||dx|| = 2.57794e-05 rey = 300
+ iter = 3 ||dx|| = 9.61411e-11 rey = 300
+  -- Solve : 
+          min -0.666667  max 0.00886652
+ Reattach point 12.6269 12.6269 12.1558
+
+  H= 1.5  Re 300  Computed reattachment point = 12.6269  psi max = 0.00886652
+
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2387 , h  min 0.00691913 , h max 2.95793
+     area =  31.125 , M area = 1101.6 , M area/( |Khat| nt) 1.06579
+     infiny-regularity:  min 0.350006  max 2.37393
+     anisomax  75.6861, beta max = 1.61185 min  0.732371
+  --  mesh:  Nb of Triangles =   2387, Nb of Vertices 1270
+ iter = 0 ||dx|| = 1.98187 rey = 400
+ iter = 1 ||dx|| = 0.167709 rey = 400
+ iter = 2 ||dx|| = 0.00392754 rey = 400
+ iter = 3 ||dx|| = 1.0668e-06 rey = 400
+ iter = 4 ||dx|| = 1.71388e-13 rey = 400
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2467 , h  min 0.00710157 , h max 3.03845
+     area =  31.125 , M area = 1144.25 , M area/( |Khat| nt) 1.07116
+     infiny-regularity:  min 0.383003  max 2.21505
+     anisomax  86.3146, beta max = 1.38147 min  0.758929
+  --  mesh:  Nb of Triangles =   2467, Nb of Vertices 1309
+ iter = 0 ||dx|| = 0.0268857 rey = 400
+ iter = 1 ||dx|| = 0.000228822 rey = 400
+ iter = 2 ||dx|| = 8.49919e-09 rey = 400
+  -- Solve : 
+          min -0.666667  max 0.00880706
+ Reattach point 12.6575 12.6575 12.1819
+
+  H= 1.5  Re 400  Computed reattachment point = 12.6575  psi max = 0.00880706
+
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2432 , h  min 0.00677643 , h max 2.98994
+     area =  31.125 , M area = 1123.4 , M area/( |Khat| nt) 1.06677
+     infiny-regularity:  min 0.357733  max 2.86392
+     anisomax  76.7028, beta max = 1.47289 min  0.725943
+  --  mesh:  Nb of Triangles =   2432, Nb of Vertices 1288
+ iter = 0 ||dx|| = 1.60532 rey = 500
+ iter = 1 ||dx|| = 0.128015 rey = 500
+ iter = 2 ||dx|| = 0.00253936 rey = 500
+ iter = 3 ||dx|| = 3.74736e-07 rey = 500
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2434 , h  min 0.00703506 , h max 2.67389
+     area =  31.125 , M area = 1146.21 , M area/( |Khat| nt) 1.08753
+     infiny-regularity:  min 0.428477  max 2.17866
+     anisomax  74.9142, beta max = 1.25209 min  0.739536
+  --  mesh:  Nb of Triangles =   2434, Nb of Vertices 1291
+ iter = 0 ||dx|| = 0.0298467 rey = 500
+ iter = 1 ||dx|| = 0.000347257 rey = 500
+ iter = 2 ||dx|| = 2.01937e-08 rey = 500
+  -- Solve : 
+          min -0.666667  max 0.00874868
+ Reattach point 12.4166 12.4166 11.7275
+
+  H= 1.5  Re 500  Computed reattachment point = 12.4166  psi max = 0.00874868
+
+  -- Square mesh : nb vertices  =161 ,  nb triangles = 264 ,  nb boundary edges 56
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 709 , h  min 0.0817566 , h max 0.529241
+     area =  20.1667 , M area = 317.504 , M area/( |Khat| nt) 1.0342
+     infiny-regularity:  min 0.580941  max 1.5339
+     anisomax  6.86396, beta max = 1.27255 min  0.77058
+  --  mesh:  Nb of Triangles =    709, Nb of Vertices 420
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 1993 , h  min 0.0671606 , h max 0.463416
+     area =  20.1667 , M area = 893.144 , M area/( |Khat| nt) 1.03494
+     infiny-regularity:  min 0.518411  max 1.66282
+     anisomax  2.52897, beta max = 1.3377 min  0.748669
+  --  mesh:  Nb of Triangles =   1993, Nb of Vertices 1139
+  -- Solve : 
+          min -0.346591  max 197.16
+  -- Solve : 
+          min -0.333333  max 7.04502e-05
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 8033 , h  min 0.0138824 , h max 0.859335
+     area =  20.1667 , M area = 3560.76 , M area/( |Khat| nt) 1.02368
+     infiny-regularity:  min 0.428314  max 2.44847
+     anisomax  23.1879, beta max = 1.43125 min  0.70429
+  --  mesh:  Nb of Triangles =   8033, Nb of Vertices 4204
+ iter = 0 ||dx|| = 6863.79 rey = 50
+ iter = 1 ||dx|| = 1.23652 rey = 50
+ iter = 2 ||dx|| = 0.0442949 rey = 50
+ iter = 3 ||dx|| = 6.34474e-05 rey = 50
+ iter = 4 ||dx|| = 1.1719e-10 rey = 50
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 4133 , h  min 0.0072831 , h max 1.5432
+     area =  20.1667 , M area = 1849.19 , M area/( |Khat| nt) 1.03328
+     infiny-regularity:  min 0.373384  max 2.25792
+     anisomax  59.7288, beta max = 1.3254 min  0.709364
+  --  mesh:  Nb of Triangles =   4133, Nb of Vertices 2178
+ iter = 0 ||dx|| = 2.54087 rey = 50
+ iter = 1 ||dx|| = 0.0561672 rey = 50
+ iter = 2 ||dx|| = 3.51018e-06 rey = 50
+ iter = 3 ||dx|| = 5.24297e-14 rey = 50
+  -- Solve : 
+          min -0.333333  max 0.0120893
+ Reattach point 2.03827 2.03827 1.99498
+
+  H= 1  Re 50  Computed reattachment point = 2.03827  Published reattachment point = 2  Relative error = 0.0187756  psi max = 0.0120893
+
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2609 , h  min 0.00755165 , h max 3.52074
+     area =  20.1667 , M area = 1133.2 , M area/( |Khat| nt) 1.00307
+     infiny-regularity:  min 0.389352  max 2.66138
+     anisomax  94.6895, beta max = 1.31844 min  0.747444
+  --  mesh:  Nb of Triangles =   2609, Nb of Vertices 1389
+ iter = 0 ||dx|| = 24.7406 rey = 150
+ iter = 1 ||dx|| = 1.70334 rey = 150
+ iter = 2 ||dx|| = 0.260502 rey = 150
+ iter = 3 ||dx|| = 0.00454192 rey = 150
+ iter = 4 ||dx|| = 2.99979e-06 rey = 150
+ iter = 5 ||dx|| = 6.88416e-13 rey = 150
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2433 , h  min 0.00766233 , h max 6.93237
+     area =  20.1667 , M area = 1065.98 , M area/( |Khat| nt) 1.01183
+     infiny-regularity:  min 0.390973  max 2.17949
+     anisomax  204.447, beta max = 1.33762 min  0.73397
+  --  mesh:  Nb of Triangles =   2433, Nb of Vertices 1302
+ iter = 0 ||dx|| = 0.0812053 rey = 150
+ iter = 1 ||dx|| = 0.000448425 rey = 150
+ iter = 2 ||dx|| = 1.97244e-08 rey = 150
+  -- Solve : 
+          min -0.333333  max 0.017132
+ Reattach point 4.90311 4.90311 4.6607
+
+  H= 1  Re 150  Computed reattachment point = 4.90311  Published reattachment point = 3.7  Relative error = 0.245378  psi max = 0.017132
+
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2228 , h  min 0.00766343 , h max 7.54265
+     area =  20.1667 , M area = 949.36 , M area/( |Khat| nt) 0.984045
+     infiny-regularity:  min 0.246993  max 2.11427
+     anisomax  219.569, beta max = 1.6497 min  0.770293
+  --  mesh:  Nb of Triangles =   2228, Nb of Vertices 1194
+ iter = 0 ||dx|| = 10.4403 rey = 300
+ iter = 1 ||dx|| = 3.06858 rey = 300
+ iter = 2 ||dx|| = 0.896323 rey = 300
+ iter = 3 ||dx|| = 0.0944086 rey = 300
+ iter = 4 ||dx|| = 0.00212437 rey = 300
+ iter = 5 ||dx|| = 1.46203e-06 rey = 300
+ iter = 6 ||dx|| = 1.14925e-12 rey = 300
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2744 , h  min 0.00757776 , h max 3.90722
+     area =  20.1667 , M area = 1193.36 , M area/( |Khat| nt) 1.00435
+     infiny-regularity:  min 0.358768  max 2.58806
+     anisomax  140.007, beta max = 1.49135 min  0.75767
+  --  mesh:  Nb of Triangles =   2744, Nb of Vertices 1460
+ iter = 0 ||dx|| = 0.135264 rey = 300
+ iter = 1 ||dx|| = 0.00316902 rey = 300
+ iter = 2 ||dx|| = 8.92315e-07 rey = 300
+  -- Solve : 
+          min -0.333333  max 0.0185098
+ Reattach point 7.97895 7.97895 7.91291
+
+  H= 1  Re 300  Computed reattachment point = 7.97895  psi max = 0.0185098
+
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2531 , h  min 0.00759605 , h max 5.13014
+     area =  20.1667 , M area = 1102.01 , M area/( |Khat| nt) 1.00553
+     infiny-regularity:  min 0.28697  max 2.3637
+     anisomax  134.291, beta max = 1.49529 min  0.709152
+  --  mesh:  Nb of Triangles =   2531, Nb of Vertices 1351
+ iter = 0 ||dx|| = 5.60964 rey = 400
+ iter = 1 ||dx|| = 1.60062 rey = 400
+ iter = 2 ||dx|| = 2.44386 rey = 400
+ iter = 3 ||dx|| = 0.514445 rey = 400
+ iter = 4 ||dx|| = 0.12737 rey = 400
+ iter = 5 ||dx|| = 0.00126606 rey = 400
+ iter = 6 ||dx|| = 8.75818e-07 rey = 400
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2819 , h  min 0.0075174 , h max 4.0256
+     area =  20.1667 , M area = 1247.04 , M area/( |Khat| nt) 1.02161
+     infiny-regularity:  min 0.318311  max 2.14249
+     anisomax  135.869, beta max = 1.41915 min  0.713393
+  --  mesh:  Nb of Triangles =   2819, Nb of Vertices 1497
+ iter = 0 ||dx|| = 0.0497631 rey = 400
+ iter = 1 ||dx|| = 0.00121629 rey = 400
+ iter = 2 ||dx|| = 1.11018e-07 rey = 400
+  -- Solve : 
+          min -0.333359  max 0.018985
+ Reattach point 9.75935 9.75935 9.48465
+
+  H= 1  Re 400  Computed reattachment point = 9.62035  psi max = 0.018985
+
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2764 , h  min 0.00765974 , h max 4.17037
+     area =  20.1667 , M area = 1221.61 , M area/( |Khat| nt) 1.02069
+     infiny-regularity:  min 0.358969  max 2.35941
+     anisomax  131.997, beta max = 1.38863 min  0.709427
+  --  mesh:  Nb of Triangles =   2764, Nb of Vertices 1468
+ iter = 0 ||dx|| = 5.39038 rey = 500
+ iter = 1 ||dx|| = 1.53942 rey = 500
+ iter = 2 ||dx|| = 2.48346 rey = 500
+ iter = 3 ||dx|| = 0.761989 rey = 500
+ iter = 4 ||dx|| = 0.0766215 rey = 500
+ iter = 5 ||dx|| = 0.00188796 rey = 500
+ iter = 6 ||dx|| = 5.41994e-07 rey = 500
+  number of required edges : 0
+  -- adaptmesh Regulary:  Nb triangles 2978 , h  min 0.00763256 , h max 3.2334
+     area =  20.1667 , M area = 1335.9 , M area/( |Khat| nt) 1.03597
+     infiny-regularity:  min 0.353497  max 2.44473
+     anisomax  130.774, beta max = 1.43574 min  0.716504
+  --  mesh:  Nb of Triangles =   2978, Nb of Vertices 1577
+ iter = 0 ||dx|| = 0.0552861 rey = 500
+ iter = 1 ||dx|| = 0.00221548 rey = 500
+ iter = 2 ||dx|| = 3.81241e-07 rey = 500
+  -- Solve : 
+          min -0.334458  max 0.019048
+ Reattach point 10.7628 10.7628 10.6817
+
+  H= 1  Re 500  Computed reattachment point = 10.7628  psi max = 0.019048
+
+
+backward_step:
+  Normal end of execution.
+times: compile 0.007336s, execution 199.702s,  mpirank:0
+ CodeAlloc : nb ptr  4572,  size :525112 mpirank: 0
+Ok: Normal End
