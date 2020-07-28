@@ -1,0 +1,395 @@
+//  backward_step.edp
+//
+//  Discussion:
+//
+//    Laminar Flow over a Backward Facing Step, Gamm Workshop.
+//
+//    Incompressible Navier Stokes with Taylor-Hood Finite element
+//    Nonlinearity handled by Newton's method. 
+//    Continuation on Reynolds Number
+//    Mesh adaptation 
+//
+//    The backward step geometry is:
+//
+//      | y=H   +--------------L5--------+  y=H
+//      |       |                        |
+//      |       L1                       L2
+//      |       |                        |
+//      | y=0.5 +-L4--+                  |
+//      |             L4                 |
+//      | y=0         +--------L3--------+  y=0
+//      |       ^     ^                  ^
+//      |       x=0   x=3                x=22
+//      |
+//      +--------------------------------------------------
+//
+//    In flow case 1, H = 1.5, and in flow case 2, H = 1.
+//    Solutions are desired at Reynolds numbers 50, 150, 500.
+//    Side L1 is an inflow boundary, with a parabolic inflow profile:
+//      uinflow = (H-y)*(y-1/2)/((H-1/2)/2)^2
+//    Side L2 is an outflow boundary where boundary conditions are not imposed.
+//    Sides labeled L3, L4 and L5 are no slip walls, with U = V = 0.
+//
+//    The steady incompressible Navier Stokes equations in 2D are:
+//
+//      -nu ( uxx + uyy ) + u ux + v uy + px = 0
+//      -nu ( vxx + vyy ) + u vx + v vy + py = 0
+//                                   ux + vy = 0
+//
+//  Location:
+//
+//    http://people.sc.fsu.edu/~jburkardt/freefem_src/backward_step/backward_step.edp
+//
+//  Original location:
+//
+//    http://www.um.es/freefem/ff++/pmwiki.php?n=Main.IncompressibleNavierStokes
+//
+//  Modified:
+//
+//    23 July 2015
+//
+//  Reference:
+//
+//    Ken Morgan, Jacques Periaux, Francois Thomasset, 
+//    Analysis of laminar flow over a backward facing step, 
+//    Notes on Numerical Fluid Mechanics, Volume 9,
+//    Vieweg, 1984,
+//    ISBN: 3-528-08083-3,
+//    LC: QA929.A5.
+//
+//  Parameters:
+//
+//    bool adapt: 
+//    0 for no adaptive mesh
+//    1 for adaptive mesh.
+//
+//    bool dplot:
+//    0 for no debug plot.
+//    1 for debug plot.
+//
+//    real eps,
+//    a coefficient for the stabilization term in the continuity equation.
+//
+//    real H, the total height of the channel.
+//
+//    real h, the width of the inflow.
+//
+//    real HH(2), an array of values for H.
+//
+//    real L, the total length of the channel.
+//
+//    real l, the X coordinate at which the step occurs.
+//
+//    int ll(4), a array of labels [3,2,5,1] used to override the default 
+//    labels [1,2,3,4] in the initial "square()" command used to create 
+//    the first mesh.
+//
+//    real Reynold[5], values of the Reynolds number at which a solution is
+//    desired.  The original benchmark only required 50, 150 and 500, but
+//    for continuation it is useful to include 300 and 400 to make 500 more
+//    easily reached.
+//
+bool adapt = 1;
+bool dplot = 0;
+real eps = 1.0E-08;
+real[int] HH = [ 1.5, 1.0 ]; 
+real l = 3.0;
+real L = 22.0;
+int[int] ll = [ 3, 2, 5, 1 ];
+real[int] Reynold = [ 50.0, 150.0, 300.0, 400.0, 500.0 ];
+real[int,int] reattachP = [ 
+  [ 2.8,  2.0 ], 
+  [ 5.16, 3.7 ] ] ;  // reattachP[irey,cas]
+int stepmax;
+
+if ( adapt )
+{
+  stepmax = 2;
+}
+else
+{
+  stepmax = 1;
+}
+cout << "\n";
+cout << "backward_step:\n";
+cout << "  FreeFem++ version:\n";
+
+for ( int cas = 0; cas < 2; cas++ )
+{
+  real h = HH[cas] - 0.5;
+  real H = HH[cas];
+//
+//  Set the inflow profile function.
+//
+  func uinflow = ( H - y ) * ( y - 0.5 ) / square ( ( H - 0.5 ) / 2.0 );
+//
+//  Define the zoom box { (xmin,ymin), (xmax,ymax) ]
+//  for closeups of the flow near the step.
+//
+  func zoom = [ 
+    [  2.5, 0.0 ], 
+    [ 10.0, H   ] ];
+//
+//  Here's an easy way to make the mesh for the step:
+//  Construct a rectangular mesh, and then take a rectangular bite out of it.
+//  
+  mesh Th = square ( 6, 22, [ x * L, y * H ], label = ll );
+  Th = trunc ( Th, ( l < x ) | ( 0.5 < y ), label = 4 ); 
+
+  plot ( Th, cmm = "Initial mesh on backward step", wait = 0, 
+    ps = "backward_step_mesh.ps" );
+//
+//  Set a meshsize metric, and adapt the mesh twice.
+//
+  func meshsize = 2.0 * max 
+  (
+    0.05,
+    max 
+    (
+      max ( x - l, 0.0 ) / 19.0 / 5.0,
+      max ( l - x, 0.0 ) /  3.0 / 8.0 
+    ) 
+  );
+
+  Th = adaptmesh ( Th, meshsize, IsMetric = 1 );
+  plot ( Th, cmm = "Adapted mesh, first pass", wait = 0 );
+
+  Th = adaptmesh ( Th, meshsize, IsMetric = 1 );
+  plot ( Th, cmm = "Adapted mesh, second pass", wait = 0 );
+//
+//  Define the finite element spaces.
+//  XXMh is the standard Taylor-Hood space.
+//
+  fespace Xh ( Th, P2 );
+  fespace Mh ( Th, P1 );
+  fespace XXMh ( Th, [ P2, P2, P1 ] );
+//
+//  Define trial and test functions.
+//
+  XXMh [ u1, u2, p ];
+  XXMh [ v1, v2, q ];
+//
+//  Macros for the variational formulation
+//  Apparently, these mysterious trailing "//" signs are an important
+//  part of the black magic.
+//
+  macro div(u1,u2) (dx(u1)+dy(u2))//
+  macro grad(u1,u2) [dx(u1),dy(u2)]//
+  macro ugrad(u1,u2,v) (u1*dx(v)+u2*dy(v))//
+  macro Ugrad(u1,u2,v1,v2) [ugrad(u1,u2,v1),ugrad(u1,u2,v2)]//
+//
+//  Define the Stokes problem:
+//
+  solve Stokes ( [u1,u2,p], [v1,v2,q], solver = UMFPACK ) =
+    int2d ( Th ) ( dx(u1) * dx(v1) + dy(u1) * dy(v1) - p * dx(v1) )
+  + int2d ( Th ) ( dx(u2) * dx(v2) + dy(u2) * dy(v2) - p * dy(v2) )
+  + int2d ( Th ) ( eps * p * q - ( dx(u1) + dy(u2) ) * q )
+  + on ( 1, u1 = uinflow, u2 = 0.0 ) 
+  + on ( 3, 4, 5, u1 = 0.0, u2 = 0.0 );
+//
+//  Make piecewise linear copies of U1 and U2 for plotting.
+//
+  Xh uu1;
+  Xh uu2;
+
+  uu1 = u1;
+  uu2 = u2;  
+
+  plot ( coef = 0.2, cmm = "Stokes [u1,u2] and p  ", p, [ uu1, uu2 ], wait = 0 );
+
+  plot ( coef = 0.2, cmm = "Stokes  p  ", p, wait = 0 );
+//
+//  Define test and trial functions for the streamline problem.
+//
+  Mh psi;
+  Mh phi;
+//
+//  Define the stream function PSI, so we can plot streamlines.
+//
+  solve streamlines ( psi, phi ) = 
+    int2d ( Th ) ( dx(psi) * dx(phi) + dy(psi) * dy(phi) )
+  + int2d ( Th ) ( - ( dy(u1) - dx(u2) ) * phi )
+  + on ( 3, 4, psi = 0.0 )
+  + on ( 5, psi = -2.0 / 3.0 * ( H - 0.5 ) );
+//
+//  Set contour levels for streamlines. 
+//  
+  real[int] psiviso(31);
+  {
+    int k = 0;
+    for ( int i = -20; i < 0; i++ )
+    {
+      psiviso[k] = i * 2.0 / 3.0 * ( H - 0.5 ) / 20.0;
+      k = k + 1;
+    }
+    for ( int i = 0; i <= 10; i++ )
+    {
+      psiviso[k] = i * 2.0 / 3.0 * ( H - 0.5 ) / 100.0 / ( H * H * H );
+      k = k + 1;
+    }
+  }
+
+  plot ( psi, cmm = "Streamlines", wait = 0, viso = psiviso );
+
+//int i = 0;
+  real nu = 1.0 / 100.0;
+//
+//  For the Newton method, we need to create a "previous" solution.
+//
+  XXMh [ up1, up2, pp ];
+//
+//  Build the matrix for the linear system in Newton method
+//
+  varf vDNS ( [u1,u2,p], [v1,v2,q] ) =
+    int2d ( Th ) (
+                 nu * ( dx(u1)*dx(v1) + dy(u1)*dy(v1)
+                       +dx(u2)*dx(v2) + dy(u2)*dy(v2)
+                      )
+              + p*q*1.0e-8// stabilization term 
+              - p*(dx(v1)+dy(v2))
+              - (dx(u1)+dy(u2))*q
+              + Ugrad(u1,u2,up1,up2)'*[v1,v2] 
+              + Ugrad(up1,up2,u1,u2)'*[v1,v2]
+             )
+  + on ( 1, 3, 4, 5, u1 = 0, u2 = 0 );
+//
+//  Build the right hand side '-F(up,vp,pp)" for Newton's method.
+//  Note that the first set of formal arguments [u1,u2,p] are
+//  not needed, and that when we invoke vNS later, we use a "0"
+//  in that argument position.
+//
+//varf vNS ( [u1,u2,p], [v1,v2,q] ) =
+//  int2d ( Th ) (       
+//               -nu * ( dx(up1)*dx(v1) + dy(up1)*dy(v1)
+//                     +dx(up2)*dx(v2) + dy(up2)*dy(v2) 
+//                    )
+//            + pp*q*1.0e-8// stabilization term 
+//            + pp*(dx(v1)+ dy(v2))
+//            + (dx(up1)+ dy(up2))*q
+//            - Ugrad(up1,up2,up1,up2)'*[v1,v2]
+//            )
+//+ on ( 1, 3, 4, 5, u1 = 0.0, u2 = 0.0 );
+//
+//  Try this reformulation which groups the terms by V1, V2, and Q.
+//
+  varf vNS ( [u1,u2,p], [v1,v2,q] ) =
+    int2d ( Th ) ( - nu * ( dx(up1) * dx(v1) + dy(up1) * dy(v1) )
+                   - up1 * dx(up1) * v1 - up2 * dy(up1) * v1
+                   + pp * dx(v1) )
+  + int2d ( Th ) ( - nu * ( dx(up2) * dx(v2) + dy(up2) * dy(v2) )
+                   - up1 * dx(up2) * v2 - up2 * dy(up2) * v2
+                   + pp * dy(v2) )
+  + int2d ( Th ) ( ( dx(up1) + dy(up2) + eps * pp ) * q )
+  + on ( 1, 3, 4, 5, u1 = 0.0, u2 = 0.0 );
+//
+//  Continuation on Reynolds number
+//
+//  Compute with one Reynolds number.
+//  If convergence, use that solution as initial data for a computation
+//  at the next higher Reynolds number.
+//
+  for ( int krey = 0; krey < Reynold.n; krey++ )
+  { 
+    real re = Reynold[krey];
+    nu = ( H - h ) / re;
+    real lerr = 0.01;
+//
+//  Adapt the mesh once or twice.
+//
+    for ( int step = 0; step < stepmax; step++ )
+    {
+      if ( adapt )
+      {
+        Th = adaptmesh ( Th, [u1,u2], p, abserror = 1, cutoff = 1e-5, 
+          err = lerr, nbvx = 100000, hmin = 0.01 );
+        [u1,u2,p] = [u1,u2,p];
+        [up1,up2,pp] = [up1,up2,pp];
+
+        if ( dplot )
+        {
+          plot ( Th, wait = 0, bb = zoom );
+        }
+
+      }
+//	
+//  Newton iterations.
+//
+      for ( int i = 0; i <= 20; i++ )
+      {
+        up1[] = u1[];
+//
+//  Right hand side for the linear system
+//
+        real[int] b = vNS(0,XXMh);
+        matrix A = vDNS(XXMh,XXMh);// Matrix for the linear system
+        set ( A, solver = UMFPACK );// Set solver to matrix
+        real[int] du = A^-1 * b; // Solve the system
+        u1[] = u1[] + du; // Perform the update of the increment in both variables at the same time
+        cout << " iter = "<< i << " ||dx|| = " << du.l2 <<  " rey = " << re << endl;
+        if ( du.l2 < 1.0e-6 ) 
+        {
+          break; 
+        }
+
+        if ( dplot )
+        {
+          uu1 = u1;
+          uu2 = u2;
+          plot ( coef = 0.2, cmm = "H="+H+" re "+re+ " [u1,u2] and p  ", 
+            p, [uu1,uu2], bb = zoom );  
+        }    
+
+      }
+    }
+//
+//  Determine the flow reattachment point and compare it to the value in the paper.
+//
+    streamlines;
+//
+//  Unfortunate use of AND and OR without enough parentheses to avoid ambiguity:
+//
+    real rp1 = 1.0 / ( H - h ) * int1d ( Th, 3 ) 
+      ( real ( ( x >= l & x < ( l+0.5 ) ) | ( x > (l+0.4) ) & ( x<10.0 ) & ( dy(psi) >= 1.0e-5 ) ) );
+    real rp2 = 1.0 / ( H - h ) * int1d ( Th, 3 ) 
+      ( real ( ( x >= l & x < ( l+0.5 ) ) | ( x > (l+0.4) ) & ( x<10.0 ) & ( dy(psi) >= -1.0e-5 ) ) );
+    real rp3 = 1.0 / ( H - h ) * int1d ( Th, 3 ) 
+      ( real ( ( x >= l & x < ( l+0.5 ) ) | ( x > (l+0.4) ) & ( x<10.0 ) & ( dy(u1) <= 0.0 )       ) );
+
+    cout << " Reattach point " << rp2 << " " << rp2 << " " << rp3 << endl;
+    real rp = ( rp1 + rp2 ) / 2.0;
+    cout << "\n";
+    cout << "  H= " << H 
+         << "  Re " << re 
+         << "  Computed reattachment point = " << rp;
+
+    if ( krey < 2 )
+    {
+      real rppaper = reattachP(krey,cas); 
+      real err = abs ( rppaper - rp ) / rp;
+      cout << "  Published reattachment point = " << rppaper 
+           << "  Relative error = " << err;
+    }
+    cout << "  psi max = " << psi[].max << endl; 
+    cout << "\n";
+//
+//  Plot.
+//
+    uu1 = u1;
+    uu2 = u2;
+
+    plot ( coef = 0.2, cmm = "H="+H+", rey="+re+" [u1,u2] and p  ", p, [uu1,uu2],
+      wait = 0, nbiso = 20, bb = zoom ); //,ps="Upstep-"+H+"-"+re+".ps");
+
+    plot ( coef = 0.2, cmm = "H="+H+", rey="+re+" [u1,u2] and p  ", p, [uu1,uu2],
+      wait = 0, nbiso = 20, bb = zoom ); //,ps="Upstep-"+H+"-"+re+".ps");  
+
+    plot ( coef = 0.2, cmm = "H="+H+", rey="+re+" [u1,u2] and p  ", psi,
+      bb = zoom, viso = psiviso ); //,ps="psi-step-"+H+"-"+re+".ps");  
+  }
+}
+//
+//  Terminate.
+//
+cout << "\n";
+cout << "backward_step:\n";
+cout << "  Normal end of execution.\n";
